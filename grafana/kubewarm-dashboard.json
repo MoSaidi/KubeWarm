@@ -123,7 +123,7 @@
     }
   ],
   "cursorSync": "Crosshair",
-  "description": "Preheat, spread, rescue, mirror, image cleanup and registry health for KubeWarm 0.1.0. Pick data source \u2192 cluster \u2192 node; click any node to focus.",
+  "description": "Preheat, spread, rescue, mirror, image cleanup and registry health for KubeWarm 0.2.0. Pick data source \u2192 cluster \u2192 node; click any node to focus.",
   "editable": true,
   "elements": {
     "panel-1": {

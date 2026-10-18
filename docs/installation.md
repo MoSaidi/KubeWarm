@@ -71,7 +71,7 @@ task build
 task images
 kind create cluster --name kubewarm --config examples/kind.yaml --image kindest/node:v1.31.0
 kubectl config use-context kind-kubewarm
-kind load docker-image kubewarm-controller:0.1.0 kubewarm-worker:0.1.0 --name kubewarm
+kind load docker-image kubewarm-controller:0.2.0 kubewarm-worker:0.2.0 --name kubewarm
 ```
 
 The kind version/node image combination must be supported by your installed kind.
@@ -188,7 +188,7 @@ nodes dynamically; label changes provide the local equivalent eligibility test.
 ### 7. Production adaptation
 
 Push both built images to your registry and set controller.image.repository and
-worker.image.repository accordingly. Use tag 0.1.0 or your own build tag. Install
+worker.image.repository accordingly. Use tag 0.2.0 or your own build tag. Install
 only one KubeWarm release per cluster (resource names are fixed). Configure registry
 authentication, private TLS API access, node selectors, real zones, and mirror
 registries. Review worker privileges and cleanup settings. Run the same failure

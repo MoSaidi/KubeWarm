@@ -22,7 +22,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: worker
-          image: kubewarm-worker:0.1.0
+          image: kubewarm-worker:0.2.0
           env:
             - name: NODE_ID
               valueFrom:

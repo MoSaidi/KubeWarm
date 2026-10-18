@@ -134,7 +134,7 @@ local. Workers listen on their pod IPs; find a healthy one with
 Run this on the stuck node:
 
 ```bash
-IMG=registry.example.com/kubewarm-worker:0.1.0
+IMG=registry.example.com/kubewarm-worker:0.2.0
 SRC=<healthy-worker-pod-ip>:18081
 TOKEN=<token from the kubewarm-rescue-token secret>
 

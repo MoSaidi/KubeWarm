@@ -27,7 +27,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: controller
-          image: kubewarm-controller:0.1.0
+          image: kubewarm-controller:0.2.0
           ports:
             - containerPort: 8080
               name: http

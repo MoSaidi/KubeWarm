@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  VERSION: '0.1.0'
+  VERSION: '0.2.0'
   IMAGE_PREFIX: kubewarm
 
 tasks:
