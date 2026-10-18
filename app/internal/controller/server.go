@@ -1,0 +1,224 @@
+// See NOTICE for licensing; README.md documents the implementation.
+package controller
+
+import (
+	"encoding/json"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	"kubewarm/internal/imageref"
+	"kubewarm/internal/logging"
+	"kubewarm/internal/metrics"
+	"kubewarm/internal/model"
+	"kubewarm/internal/sharedtoken"
+)
+
+// Server wires the registry + ranker up to HTTP handlers.
+type Server struct {
+	registry   *Registry
+	ranker     *Ranker
+	rescuer    *Rescuer    // nil when rescue is off
+	propagator *Propagator // nil when propagation is off
+	spreader   *Spreader   // nil when spreading is off
+	auth       *sharedtoken.Auth
+	webhook    *sharedtoken.Auth // CI's token for /webhook/preheat
+	mux        *http.ServeMux
+}
+
+// SetPropagator makes accepted preheats also start a propagation, and adds
+// propagation state to /status.
+func (s *Server) SetPropagator(p *Propagator) { s.propagator = p }
+
+// SetSpreader makes accepted preheats spread blob by blob, mounts
+// /spread/done (workers' transfer reports) behind the shared token, and
+// adds spreads to /status. Call after SetToken.
+func (s *Server) SetSpreader(sp *Spreader) {
+	s.spreader = sp
+	s.mux.HandleFunc("/spread/done", sharedtoken.Require(s.auth.Token, sp.HandleDone))
+}
+
+// SetToken mounts /layers/holders, which workers' mirrors call, behind
+// the shared token, and makes /report require it too (subject to the
+// mode set with SetAuthMode).
+func (s *Server) SetToken(token string) {
+	s.auth.Token = token
+	s.mux.HandleFunc("/layers/holders", sharedtoken.Require(token, s.handleHolders))
+}
+
+// SetWebhookToken makes /webhook/preheat require token. It is CI's own
+// token, separate from the shared one, so CI can't talk to workers.
+func (s *Server) SetWebhookToken(token string) { s.webhook.Token = token }
+
+// SetAuthMode sets what /report does with a request without the token.
+func (s *Server) SetAuthMode(m sharedtoken.Mode) { s.auth.Mode = m }
+
+func (s *Server) handleHolders(w http.ResponseWriter, r *http.Request) {
+	digest := r.URL.Query().Get("digest")
+	if !strings.HasPrefix(digest, "sha256:") {
+		http.Error(w, "digest required", http.StatusBadRequest)
+		return
+	}
+	var spreading []string
+	if s.spreader != nil {
+		spreading = s.spreader.Holders(digest)
+	}
+	holders := s.registry.Holders(digest, r.URL.Query().Get("exclude"), spreading)
+	nodes := s.registry.Nodes()
+	zone := nodes[r.URL.Query().Get("exclude")].Metadata.Labels["topology.kubernetes.io/zone"]
+	if zone != "" {
+		sort.SliceStable(holders, func(i, j int) bool {
+			return nodes[holders[i].NodeID].Metadata.Labels["topology.kubernetes.io/zone"] == zone && nodes[holders[j].NodeID].Metadata.Labels["topology.kubernetes.io/zone"] != zone
+		})
+	}
+	if holders == nil {
+		holders = []model.Holder{}
+	}
+	writeJSON(w, http.StatusOK, holders)
+}
+
+// SetRescuer adds the rescuer's state to /status.
+func (s *Server) SetRescuer(rs *Rescuer) { s.rescuer = rs }
+
+// NewServer builds a Server with routes registered.
+func NewServer(registry *Registry, ranker *Ranker) *Server {
+	s := &Server{registry: registry, ranker: ranker, auth: &sharedtoken.Auth{}, webhook: &sharedtoken.Auth{}, mux: http.NewServeMux()}
+	// A preheat makes every node pull with the registry credentials, so
+	// whoever can reach the ingress could otherwise trigger it at will.
+	s.mux.HandleFunc("/webhook/preheat", s.webhook.Guard("/webhook/preheat", s.handlePreheat))
+	// /report decides which addresses rescue and propagation send the
+	// token to, so an unauthenticated report could register an attacker's
+	// address and collect it.
+	s.mux.HandleFunc("/report", s.auth.Guard("/report", s.handleReport))
+	s.mux.HandleFunc("/status", s.handleStatus)
+	s.mux.Handle("/metrics", metrics.Handler())
+	s.mux.HandleFunc("/healthz", s.handleHealth)
+	return s
+}
+
+// Handler returns the underlying http.Handler for use with http.ListenAndServe.
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
+
+// handlePreheat is called by the CI/CD pipeline right after `docker push`.
+// If no worker has reported recently, the controller has no reliable view
+// of disk state on any node, so it refuses the request outright rather than
+// guessing.
+func (s *Server) handlePreheat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req model.PreheatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+	req.Image = strings.TrimSpace(req.Image)
+	if req.Image == "" {
+		writeJSON(w, http.StatusBadRequest, model.PreheatResponse{
+			Accepted: false,
+			Reason:   "missing image",
+		})
+		return
+	}
+	// Normalize short Docker-style references ("nginx", "nginx:latest")
+	// into fully-qualified ones ("docker.io/library/nginx:latest") here,
+	// once, at the entry point, so every downstream consumer (ranking,
+	// the pull order sent to workers) sees the same canonical reference
+	// rather than inconsistent forms of the same image.
+	normalized := imageref.Normalize(req.Image)
+	if normalized != req.Image {
+		logging.Infof("kubewarm-controller: normalized image reference %q to %q", req.Image, normalized)
+	}
+	req.Image = normalized
+
+	if s.registry.FreshCount() == 0 {
+		logging.Warnf("kubewarm-controller: rejecting preheat for image=%s: zero fresh workers reporting", req.Image)
+		writeJSON(w, http.StatusServiceUnavailable, model.PreheatResponse{
+			Accepted: false,
+			Reason:   "no fresh workers reporting; refusing to guess at disk state",
+		})
+		return
+	}
+
+	if s.spreader != nil {
+		ordered, err := s.spreader.Start(r.Context(), req.Image)
+		if err == nil {
+			logging.Infof("kubewarm-controller: accepted preheat for image=%s: spreading blob by blob, %d node(s) pulling from the registry first: %v", req.Image, len(ordered), ordered)
+			writeJSON(w, http.StatusAccepted, model.PreheatResponse{Accepted: true, TargetImage: req.Image, OrderedNodes: ordered})
+			return
+		}
+		logging.Warnf("kubewarm-controller: can't spread image=%s blob by blob (%v); seeding it whole instead", req.Image, err)
+	}
+
+	s.registry.SetTarget(req.Image)
+	ordered := s.ranker.OrderNow(req.Image)
+	if s.propagator != nil {
+		s.propagator.Start(req.Image)
+	}
+
+	logging.Infof("kubewarm-controller: accepted preheat for image=%s, ordered %d node(s): %v", req.Image, len(ordered), ordered)
+	writeJSON(w, http.StatusAccepted, model.PreheatResponse{
+		Accepted:     true,
+		TargetImage:  req.Image,
+		OrderedNodes: ordered,
+	})
+}
+
+// handleReport ingests periodic disk-utilization reports from workers.
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var rep model.WorkerReport
+	if err := json.NewDecoder(r.Body).Decode(&rep); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+	if rep.NodeID == "" || rep.Address == "" {
+		http.Error(w, "node_id and address are required", http.StatusBadRequest)
+		return
+	}
+	if rep.Timestamp.IsZero() {
+		rep.Timestamp = time.Now()
+	}
+	ack := s.registry.Update(rep)
+	if rep.Layers != nil {
+		l := rep.Layers
+		logging.Debugf("kubewarm-controller: layer sync from node=%s full=%v seq=%d base=%d blobs=+%d/-%d snaps=+%d/-%d -> held=%d resync=%v",
+			rep.NodeID, l.Full, l.Seq, l.Base, len(l.AddBlobs), len(l.DelBlobs), len(l.AddSnaps), len(l.DelSnaps), ack.LayersSeq, ack.LayersResync)
+	}
+	logging.Debugf("kubewarm-controller: report from node=%s address=%s utilization=%.1f%%", rep.NodeID, rep.Address, rep.Utilization*100)
+	writeJSON(w, http.StatusOK, ack)
+}
+
+// handleStatus is a debug endpoint showing the full worker registry and
+// current preheat target.
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	status := s.registry.Snapshot()
+	if s.rescuer != nil {
+		status.Rescues = s.rescuer.Status()
+	}
+	if s.propagator != nil {
+		status.Propagations = s.propagator.Status()
+	}
+	if s.spreader != nil {
+		status.Spreads = s.spreader.Status()
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}

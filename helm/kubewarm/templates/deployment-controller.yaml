@@ -1,0 +1,93 @@
+# See NOTICE for licensing; README.md documents the implementation.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubewarm-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kubewarm
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubewarm
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubewarm
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: kubewarm-controller
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: {{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: kubewarm-config
+          volumeMounts:
+            - name: warming-policies
+              mountPath: /etc/kubewarm/policies
+              readOnly: true
+            - name: registry-creds
+              mountPath: /etc/kubewarm/registry-creds
+              readOnly: true
+            - name: rescue-token
+              mountPath: /etc/kubewarm/rescue-token
+              readOnly: true
+            - name: webhook-token
+              mountPath: /etc/kubewarm/webhook-token
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: warming-policies
+          configMap:
+            name: kubewarm-policies
+        - name: registry-creds
+          secret:
+            secretName: {{ .Values.registryCredentials.secretName }}
+            {{- if .Values.registryCredentials.optional }}
+            optional: true
+            {{- end }}
+        - name: rescue-token
+          secret:
+            secretName: kubewarm-rescue-token
+            optional: false
+        - name: webhook-token
+          secret:
+            secretName: kubewarm-webhook-token
+            optional: false

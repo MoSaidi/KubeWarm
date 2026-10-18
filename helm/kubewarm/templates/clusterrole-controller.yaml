@@ -1,0 +1,15 @@
+# See NOTICE for licensing; README.md documents the implementation.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubewarm-controller
+  labels:
+    app.kubernetes.io/name: kubewarm
+    app.kubernetes.io/component: controller
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]

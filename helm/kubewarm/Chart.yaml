@@ -1,0 +1,14 @@
+# See NOTICE for licensing; README.md documents the implementation.
+apiVersion: v2
+name: kubewarm
+description: Image lifecycle manager for Kubernetes nodes running containerd - preheat on push, peer-to-peer spreading, pull rescue and image cleanup.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0"
+keywords:
+  - containerd
+  - image
+  - preheat
+  - p2p
+  - registry

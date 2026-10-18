@@ -1,0 +1,17 @@
+# See NOTICE for licensing; README.md documents the implementation.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubewarm-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kubewarm
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    app.kubernetes.io/name: kubewarm
+    app.kubernetes.io/component: controller
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

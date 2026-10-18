@@ -1,0 +1,12 @@
+# See NOTICE for licensing; README.md documents the implementation.
+FROM golang:1.24.7-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY internal ./internal
+COPY cmd/controller ./cmd/controller
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/kubewarm-controller ./cmd/controller
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/kubewarm-controller /kubewarm-controller
+ENTRYPOINT ["/kubewarm-controller"]

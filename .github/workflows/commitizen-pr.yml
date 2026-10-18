@@ -1,0 +1,26 @@
+name: Commitizen PR Check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-pr:
+    name: Check commits in pull request
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Check all commits in PR
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: uvx --from commitizen==4.19.2 cz check --rev-range "origin/$BASE_REF..HEAD"

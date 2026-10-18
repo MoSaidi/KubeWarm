@@ -1,0 +1,63 @@
+name: Bump Version
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    name: Validate before version bump
+    uses: ./.github/workflows/test.yaml
+
+  bump-version:
+    name: Bump version and update changelog
+    needs: validation
+    if: >-
+      ${{ !startsWith(github.event.head_commit.message, 'bump: version ') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check release token configuration
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::Missing RELEASE_TOKEN. Add a repository Actions secret with Contents read/write access to this repository so version and tag pushes can trigger release workflows."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version, update changelog, and push tag
+        id: bump
+        run: |
+          set -euo pipefail
+          current_version="$(sed -n 's/^version = "\(.*\)"/\1/p' .cz.toml)"
+          uvx --from commitizen==4.19.2 cz -nr 21 bump --yes
+          next_version="$(sed -n 's/^version = "\(.*\)"/\1/p' .cz.toml)"
+
+          if [ "$current_version" = "$next_version" ]; then
+            echo "No conventional commits require a release."
+            echo "No version bump needed" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git push origin HEAD:main
+          git push origin "v$next_version"
+          echo "Released version candidate: v$next_version" >> "$GITHUB_STEP_SUMMARY"

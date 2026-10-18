@@ -1,0 +1,14 @@
+# See NOTICE for licensing; README.md documents the implementation.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubewarm-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kubewarm
+    app.kubernetes.io/component: worker
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    resourceNames: ["kubewarm-worker"]
+    verbs: ["get"]

@@ -1,0 +1,73 @@
+name: KubeWarm validation
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Validate KubeWarm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.24.7'
+          cache-dependency-path: app/go.sum
+
+      - name: Check Go formatting
+        working-directory: app
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'Run gofmt on these files:\n%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet Go packages
+        run: go vet ./...
+        working-directory: app
+
+      - name: Run Go tests with the race detector
+        run: go test -race ./...
+        working-directory: app
+
+      - name: Build controller and worker
+        run: go build ./cmd/controller ./cmd/worker
+        working-directory: app
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Check Python client syntax
+        run: python -m py_compile scripts/warm-and-wait.py
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.17.3
+
+      - name: Lint Helm chart
+        run: helm lint helm/kubewarm
+
+      - name: Render default and optional Helm resources
+        run: |
+          helm template kubewarm helm/kubewarm --namespace kubewarm > /tmp/rendered.yaml
+          helm template kubewarm helm/kubewarm --namespace validation \
+            --set ingress.enabled=true \
+            --set serviceMonitor.enabled=true \
+            --set registryCredentials.optional=false \
+            -f examples/policies-values.yaml > /tmp/rendered-options.yaml
+
+      - name: Build controller image
+        run: docker build -f app/Dockerfile.controller app
+
+      - name: Build worker image
+        run: docker build -f app/Dockerfile.worker app

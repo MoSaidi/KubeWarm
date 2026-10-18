@@ -1,0 +1,8 @@
+# See NOTICE for licensing; README.md documents the implementation.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubewarm-policies
+  namespace: {{ .Release.Namespace }}
+data:
+  policies.json: {{ .Values.warmingPolicies | toJson | quote }}

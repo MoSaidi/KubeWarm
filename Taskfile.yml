@@ -1,0 +1,31 @@
+version: '3'
+
+vars:
+  VERSION: '0.1.0'
+  IMAGE_PREFIX: kubewarm
+
+tasks:
+  test:
+    desc: Run Go tests with the race detector
+    dir: app
+    cmds:
+      - go test -race ./...
+
+  build:
+    desc: Build the controller and worker binaries
+    dir: app
+    cmds:
+      - mkdir -p ../bin
+      - go build -o ../bin/kubewarm-controller ./cmd/controller
+      - go build -o ../bin/kubewarm-worker ./cmd/worker
+
+  images:
+    desc: Build the controller and worker Docker images
+    cmds:
+      - docker build -f app/Dockerfile.controller -t {{.IMAGE_PREFIX}}-controller:{{.VERSION}} app
+      - docker build -f app/Dockerfile.worker -t {{.IMAGE_PREFIX}}-worker:{{.VERSION}} app
+
+  lint:
+    desc: Lint the Helm chart
+    cmds:
+      - helm lint helm/kubewarm

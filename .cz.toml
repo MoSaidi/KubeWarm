@@ -1,0 +1,21 @@
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+version_scheme = "semver2"
+tag_format = "v$version"
+major_version_zero = true
+annotated_tag = true
+update_changelog_on_bump = true
+changelog_file = "CHANGELOG.md"
+changelog_incremental = true
+version_files = [
+  "helm/kubewarm/Chart.yaml:^version:",
+  "helm/kubewarm/Chart.yaml:^appVersion:",
+  "Taskfile.yml:^  VERSION:",
+  "k8s/deployment-controller.yaml:kubewarm-controller:",
+  "k8s/daemonset-worker.yaml:kubewarm-worker:",
+  "docs/installation.md:kind load docker-image",
+  "docs/installation.md:Use tag ",
+  "docs/operations.md:^IMG=",
+  "grafana/kubewarm-dashboard.json:KubeWarm 0.1.0",
+]

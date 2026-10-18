@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubewarm-controller
+  namespace: kubewarm
+  labels:
+    app.kubernetes.io/name: kubewarm
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubewarm
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubewarm
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: kubewarm-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: kubewarm-controller:0.1.0
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: kubewarm-config
+          volumeMounts:
+            - name: registry-creds
+              mountPath: /etc/kubewarm/registry-creds
+              readOnly: true
+            - name: rescue-token
+              mountPath: /etc/kubewarm/rescue-token
+              readOnly: true
+            - name: webhook-token
+              mountPath: /etc/kubewarm/webhook-token
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 150m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: registry-creds
+          secret:
+            secretName: registry-pull
+            optional: true
+        - name: rescue-token
+          secret:
+            secretName: kubewarm-rescue-token
+            optional: true
+        - name: webhook-token
+          secret:
+            secretName: kubewarm-webhook-token
+            optional: true

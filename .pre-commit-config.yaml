@@ -1,0 +1,58 @@
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+        exclude: ^helm/kubewarm/templates/
+      - id: check-toml
+      - id: detect-private-key
+      - id: check-added-large-files
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-executables-have-shebangs
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.19.2
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+      - id: commitizen-branch
+        stages: [manual]
+
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: Format Go files
+        entry: gofmt -w
+        language: system
+        types: [go]
+        files: ^app/
+
+      - id: go-vet
+        name: Vet Go packages
+        entry: sh -c 'cd app && go vet ./...'
+        language: system
+        pass_filenames: false
+        files: ^app/.*(\.go|go\.mod|go\.sum)$
+        stages: [pre-push]
+
+      - id: helm-lint
+        name: Lint Helm chart
+        entry: helm lint helm/kubewarm
+        language: system
+        pass_filenames: false
+        files: ^helm/kubewarm/
+
+      - id: helm-template
+        name: Render Helm chart
+        entry: helm template kubewarm helm/kubewarm --namespace kubewarm
+        language: system
+        pass_filenames: false
+        files: ^helm/kubewarm/

@@ -1,0 +1,21 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kubewarm-controller
+  namespace: kubewarm
+  labels:
+    release: prometheus
+    app.kubernetes.io/name: kubewarm
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubewarm
+      app.kubernetes.io/component: controller
+  namespaceSelector:
+    matchNames:
+      - kubewarm
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

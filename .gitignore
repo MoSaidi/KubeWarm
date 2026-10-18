@@ -1,0 +1,8 @@
+bin/
+*.zip
+__pycache__/
+*.pyc
+.env
+.csm*
+secrets/
+/repo/

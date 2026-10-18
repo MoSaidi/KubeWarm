@@ -1,0 +1,13 @@
+# Add this stage between your existing image push and deployment stages.
+# Runner must reach the controller through a private HTTPS endpoint or cluster DNS.
+# Set KUBEWARM_URL, masked KUBEWARM_TOKEN, and IMAGE_REF (repo@sha256:digest).
+# Adjust label/zone requirements for your cluster.
+stages: [warm, deploy]
+warm:
+  stage: warm
+  image: python:3.12-slim
+  script:
+    - python -c 'import json,os; json.dump(dict(image=os.environ["IMAGE_REF"],nodeSelector={"workload":"api"},minReady=2,timeoutSeconds=300),open("warming.json","w"))'
+    - python scripts/warm-and-wait.py --request warming.json
+# Your actual deploy job must depend on warm and use the same IMAGE_REF and
+# compatible scheduling constraints. Never use allow_failure for a required gate.

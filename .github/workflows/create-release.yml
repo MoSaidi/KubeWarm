@@ -1,0 +1,120 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    name: Validate release commit
+    uses: ./.github/workflows/test.yaml
+
+  create-release:
+    name: Build and publish KubeWarm release
+    needs: validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.7"
+          cache-dependency-path: app/go.sum
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.17.3
+
+      - name: Read version from tag
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd app
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../dist/kubewarm-controller-linux-amd64 ./cmd/controller
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../dist/kubewarm-worker-linux-amd64 ./cmd/worker
+
+      - name: Package Helm chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          helm package helm/kubewarm --version "$VERSION" --app-version "$VERSION" --destination dist
+
+      - name: Extract release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v version="$VERSION" '
+            /^## / {
+              heading = $2
+              sub(/^v/, "", heading)
+              if (found) exit
+              if (heading == version) { found = 1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > dist/release-notes.md
+          if [ ! -s dist/release-notes.md ]; then
+            printf 'KubeWarm %s release.\n' "$GITHUB_REF_NAME" > dist/release-notes.md
+          fi
+
+      - name: Set lowercase GHCR namespace
+        id: ghcr
+        shell: bash
+        run: echo "namespace=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish controller image
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          file: app/Dockerfile.controller
+          push: true
+          tags: ${{ steps.ghcr.outputs.namespace }}/kubewarm-controller:${{ steps.version.outputs.version }}
+
+      - name: Publish worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          file: app/Dockerfile.worker
+          push: true
+          tags: ${{ steps.ghcr.outputs.namespace }}/kubewarm-worker:${{ steps.version.outputs.version }}
+
+      - name: Create checksums
+        run: sha256sum dist/kubewarm-* > dist/SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.version.outputs.tag }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          body_path: dist/release-notes.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/kubewarm-*
+            dist/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

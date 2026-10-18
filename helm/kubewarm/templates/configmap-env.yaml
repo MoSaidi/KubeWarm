@@ -1,0 +1,16 @@
+# See NOTICE for licensing; README.md documents the implementation.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubewarm-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kubewarm
+data:
+  {{- range $k, $v := .Values.config }}
+  {{- if eq $k "CONTROLLER_URL" }}
+  CONTROLLER_URL: {{ printf "http://kubewarm-controller.%s.svc.cluster.local:8080" $.Release.Namespace | quote }}
+  {{- else }}
+  {{ $k }}: {{ $v | toString | quote }}
+  {{- end }}
+  {{- end }}

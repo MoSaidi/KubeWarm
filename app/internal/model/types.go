@@ -1,0 +1,329 @@
+// See NOTICE for licensing; README.md documents the implementation.
+// Package model holds the wire-format types shared between the KubeWarm
+// controller and worker processes.
+package model
+
+import "time"
+
+// WorkerReport is pushed periodically (default every 15s) by every worker to
+// the controller. It carries just enough information for the controller to
+// rank nodes by disk utilization and image locality, and to know how to
+// reach the worker back.
+type WorkerReport struct {
+	NodeID      string  `json:"node_id"`
+	Address     string  `json:"address"`     // host:port the controller can reach this worker's HTTP API on
+	Utilization float64 `json:"utilization"` // 0.0-1.0, root filesystem usage ratio
+	// Repos is the deduplicated set of bare repository identities (see
+	// imageref.Repo) present locally on this node, across every tag and
+	// alias form the runtime reports. It lets the controller prefer
+	// pre-pulling a newly-pushed tag onto a node that already has some
+	// older tag of the same repo, since most layers are typically shared
+	// between tags of the same image. Omitted (nil/empty) is always safe
+	// — the ranker just falls back to utilization-only ranking for that
+	// node, identical to its behavior before this field existed.
+	Repos []string `json:"repos,omitempty"`
+	// Images is every full image reference present locally (tag form and
+	// repo@digest form; bare "sha256:..." image IDs are dropped). The
+	// controller's rescuer uses it to find a node that holds the exact
+	// image a stuck pod needs. Omitted means "unknown", which only makes
+	// this node ineligible as a rescue source.
+	Images []string `json:"images,omitempty"`
+	// Layers carries this node's layer inventory (see LayerSync). Nil
+	// means "unchanged since the last acknowledged sync" — or, from a
+	// worker that predates it, "unknown".
+	Layers *LayerSync `json:"layers,omitempty"`
+	// InventoryHash identifies Repos and Images. A worker leaves both out
+	// when the controller's last ack echoed the same hash: the controller
+	// already holds them. Empty from workers that predate it.
+	InventoryHash string `json:"inventory_hash,omitempty"`
+	// InventoryOmitted is set when Repos and Images were left out because
+	// the controller already holds InventoryHash. Without it, empty lists
+	// are a real (empty) inventory.
+	InventoryOmitted bool      `json:"inventory_omitted,omitempty"`
+	Timestamp        time.Time `json:"timestamp"`
+}
+
+// LayerSync is one step of a worker's layer inventory: every blob digest
+// in its containerd content store and every committed snapshot (chainID)
+// in its snapshotter. A layer counts as present on a node if either its
+// blob or its snapshot is there, which is what makes the inventory work
+// whatever discard_unpacked_layers is set to.
+//
+// It is sent as a delta. The worker numbers each version it sends (Seq)
+// and names the version the delta applies on (Base). The controller
+// applies a delta only when it holds exactly Base under the same Epoch;
+// otherwise it asks for a full resync in its ack. A Full sync replaces
+// everything the controller holds for the node.
+type LayerSync struct {
+	Epoch    string   `json:"epoch"` // random per worker process; a restart starts a new one
+	Seq      uint64   `json:"seq"`
+	Base     uint64   `json:"base,omitempty"`
+	Full     bool     `json:"full,omitempty"`
+	AddBlobs []string `json:"add_blobs,omitempty"`
+	DelBlobs []string `json:"del_blobs,omitempty"`
+	AddSnaps []string `json:"add_snaps,omitempty"`
+	DelSnaps []string `json:"del_snaps,omitempty"`
+}
+
+// ReportAck is returned to a worker after it submits a report.
+type ReportAck struct {
+	Accepted bool `json:"accepted"`
+	// LayersSeq is the layer inventory version the controller now holds
+	// for this node (0: none).
+	LayersSeq uint64 `json:"layers_seq,omitempty"`
+	// LayersResync asks the worker to send a full layer sync next time,
+	// because the delta it sent doesn't apply to what the controller holds
+	// (a controller restart, say).
+	LayersResync bool `json:"layers_resync,omitempty"`
+	// InventoryHash is the hash of the inventory the controller holds for
+	// this worker; the worker may omit an unchanged inventory while it
+	// matches. Empty from controllers that predate it, which always need
+	// the full inventory.
+	InventoryHash string `json:"inventory_hash,omitempty"`
+}
+
+// PreheatRequest is the payload the CI/CD pipeline sends right after
+// `docker push`, asking KubeWarm to pre-pull the freshly pushed image onto
+// some low-utilization nodes ahead of / alongside the GitOps sync.
+type PreheatRequest struct {
+	Image string `json:"image"`
+}
+
+// PreheatResponse tells the caller what the controller decided to do.
+type PreheatResponse struct {
+	Accepted     bool     `json:"accepted"`
+	Reason       string   `json:"reason,omitempty"`
+	TargetImage  string   `json:"target_image,omitempty"`
+	OrderedNodes []string `json:"ordered_nodes,omitempty"`
+}
+
+// PullOrder is what the controller sends to a specific worker's /pull
+// endpoint, instructing it to pull an image locally.
+type PullOrder struct {
+	Image     string    `json:"image"`
+	OrderedAt time.Time `json:"ordered_at"`
+}
+
+// PullAck is the worker's synchronous response to a pull order. The actual
+// pull happens asynchronously; this just confirms the order was accepted.
+type PullAck struct {
+	Accepted bool   `json:"accepted"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// WorkerStatus is a read-only snapshot of a worker's state, used by the
+// controller's /status debug endpoint.
+type WorkerStatus struct {
+	NodeID      string    `json:"node_id"`
+	Address     string    `json:"address"`
+	Utilization float64   `json:"utilization"`
+	Repos       []string  `json:"repos,omitempty"`
+	LastSeen    time.Time `json:"last_seen"`
+	Fresh       bool      `json:"fresh"`
+	// Layer inventory size, when the node has sent one.
+	LayersKnown bool `json:"layers_known"`
+	Blobs       int  `json:"blobs,omitempty"`
+	Snapshots   int  `json:"snapshots,omitempty"`
+}
+
+// ControllerStatus is the full debug snapshot served at /status.
+type ControllerStatus struct {
+	Workers      []WorkerStatus      `json:"workers"`
+	FreshCount   int                 `json:"fresh_count"`
+	TargetImage  string              `json:"target_image,omitempty"`
+	TargetSetAt  *time.Time          `json:"target_set_at,omitempty"`
+	Rescues      []RescueStatus      `json:"rescues,omitempty"`
+	Propagations []PropagationStatus `json:"propagations,omitempty"`
+	Spreads      []SpreadStatus      `json:"spreads,omitempty"`
+}
+
+// PropagationStatus is the propagator's view of one image being spread.
+type PropagationStatus struct {
+	Image     string    `json:"image"`
+	StartedAt time.Time `json:"started_at"`
+	EndsAt    time.Time `json:"ends_at,omitempty"` // zero: no window, runs until complete or superseded
+	Have      []string  `json:"have"`              // eligible nodes that have it
+	Missing   []string  `json:"missing"`           // eligible nodes still without it
+	InFlight  []string  `json:"in_flight"`         // nodes receiving it right now
+	Seeding   []string  `json:"seeding,omitempty"` // seeds still pulling it from the registry
+	Skipped   []string  `json:"skipped,omitempty"` // nodes left out (excluded or too full)
+	Failing   []string  `json:"failing,omitempty"` // nodes whose last attempt failed
+}
+
+// RescueStatus is the rescuer's view of one image one node can't pull.
+type RescueStatus struct {
+	Node                string    `json:"node"`
+	Image               string    `json:"image"`
+	Pods                []string  `json:"pods"`
+	StuckSince          time.Time `json:"stuck_since"` // when the rescuer first saw it
+	InFlight            bool      `json:"in_flight"`
+	LastResult          string    `json:"last_result,omitempty"`
+	LastError           string    `json:"last_error,omitempty"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	NextAttempt         time.Time `json:"next_attempt"`
+}
+
+// RescueSource is a peer worker that holds the image a rescue needs.
+type RescueSource struct {
+	NodeID  string `json:"node_id"`
+	Address string `json:"address"`
+}
+
+// RescueOrder is what the controller sends to the /rescue endpoint of the
+// worker on the node whose pod is stuck in ImagePullBackOff. The worker
+// tries Sources in order until one of them ships the image.
+type RescueOrder struct {
+	Image   string         `json:"image"`
+	Sources []RescueSource `json:"sources"`
+	// Reason is "rescue" (a pod is stuck on this node) or "propagate" (the
+	// image is being spread after a push). Only used for logs and metrics.
+	Reason string `json:"reason,omitempty"`
+}
+
+// RescueResult is the target worker's answer to a RescueOrder. /rescue is
+// synchronous: it returns once the image is imported, or every source has
+// failed.
+type RescueResult struct {
+	OK        bool   `json:"ok"`
+	Source    string `json:"source,omitempty"` // node that shipped the image
+	Blobs     int    `json:"blobs"`            // blobs shipped (missing ones only)
+	Snapshots int    `json:"snapshots"`        // layers shipped as snapshot directories
+	Bytes     int64  `json:"bytes"`            // bytes received over the wire
+	Error     string `json:"error,omitempty"`
+}
+
+// BlobPlanRequest asks a source worker which blobs make up image for one
+// platform (served at /blobs/plan).
+type BlobPlanRequest struct {
+	Image    string `json:"image"`
+	Platform string `json:"platform"` // "os/arch[/variant]", e.g. "linux/amd64"
+}
+
+// SnapshotExportRequest asks a source worker to stream one layer's
+// snapshot as a gzip-compressed tar (served at /snapshots/export).
+// ChainID must be a layer of the image's plan; anything else is refused.
+//
+// Format is the tar format the receiver wants (blobship.FormatOCILayer
+// from 1.8.6 on). Receivers before 1.8.6 leave it empty and get the overlayfs
+// directory format they apply themselves.
+type SnapshotExportRequest struct {
+	Image    string `json:"image"`
+	Platform string `json:"platform"`
+	ChainID  string `json:"chain_id"`
+	Format   string `json:"format,omitempty"`
+}
+
+// BlobExportRequest asks a source worker to stream a partial OCI archive
+// holding only Digests (served at /blobs/export). Every digest must belong
+// to the image's plan; anything else is refused.
+type BlobExportRequest struct {
+	Image    string   `json:"image"`
+	Platform string   `json:"platform"`
+	Digests  []string `json:"digests"`
+}
+
+// Holder is a worker that holds a blob, as /layers/holders returns it.
+type Holder struct {
+	NodeID  string `json:"node_id"`
+	Address string `json:"address"`
+}
+
+// Spread: an image is spread blob by blob. The controller assigns each
+// node at most one registry pull and one peer transfer at a time, each
+// for one blob, and the node reports back as each finishes. When a node
+// holds every layer, the controller sends it the image's few KB of
+// metadata to register it (SpreadFinalize).
+
+// Spread transfer paths.
+const (
+	SpreadPathRegistry = "registry" // north-south: from the image's registry
+	SpreadPathPeer     = "peer"     // east-west: from another node
+)
+
+// SpreadFetch orders a worker to fetch one blob (POST /spread/fetch).
+type SpreadFetch struct {
+	Job    string  `json:"job"`
+	Image  string  `json:"image"` // the registry repository to pull from, for SpreadPathRegistry
+	Digest string  `json:"digest"`
+	Size   int64   `json:"size"`
+	Path   string  `json:"path"`
+	Peer   *Holder `json:"peer,omitempty"` // for SpreadPathPeer
+}
+
+// SpreadFetchAck is the worker's immediate answer to a SpreadFetch.
+// Accepted: the transfer started, a SpreadDone follows. Present: the
+// blob is already here. Neither: the slot for that path is busy.
+type SpreadFetchAck struct {
+	Accepted bool   `json:"accepted"`
+	Present  bool   `json:"present,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// Spread results, in SpreadDone.Result.
+const (
+	SpreadResultOK        = "ok"
+	SpreadResultFailed    = "failed"
+	SpreadResultCancelled = "cancelled" // the blob arrived by the other path first, or the job was dropped
+)
+
+// SpreadDone is a worker's report that one transfer ended (POST
+// /spread/done on the controller).
+type SpreadDone struct {
+	Node    string  `json:"node"`
+	Job     string  `json:"job"`
+	Digest  string  `json:"digest"`
+	Path    string  `json:"path"`
+	Result  string  `json:"result"`
+	Error   string  `json:"error,omitempty"`
+	Bytes   int64   `json:"bytes"`
+	Seconds float64 `json:"seconds"`
+}
+
+// SpreadFinalize hands a node that holds every layer the image's metadata
+// blobs (index, manifest, config), so it registers and unpacks the image
+// (POST /spread/finalize). Metadata digests are checked on arrival.
+type SpreadFinalize struct {
+	Job      string            `json:"job"`
+	Image    string            `json:"image"`
+	TopType  string            `json:"top_type"`
+	TopDig   string            `json:"top_digest"`
+	TopSize  int64             `json:"top_size"`
+	Metadata map[string][]byte `json:"metadata"`
+}
+
+// SpreadFinalizeResult is the worker's answer to a SpreadFinalize.
+type SpreadFinalizeResult struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// SpreadDrop tells a worker a job is over for it: cancel its transfers
+// and release the blobs held for it (POST /spread/drop).
+type SpreadDrop struct {
+	Job string `json:"job"`
+}
+
+// SpreadStatus is the controller's view of one image being spread, for
+// /status.
+type SpreadStatus struct {
+	Image     string             `json:"image"`
+	Job       string             `json:"job"`
+	StartedAt time.Time          `json:"started_at"`
+	Layers    int                `json:"layers"`
+	Bytes     int64              `json:"bytes"`
+	Done      []string           `json:"done"`
+	Skipped   []string           `json:"skipped,omitempty"`
+	Nodes     []SpreadNodeStatus `json:"nodes,omitempty"` // nodes not done yet
+}
+
+// SpreadNodeStatus is one node still working on a spread.
+type SpreadNodeStatus struct {
+	Node          string `json:"node"`
+	MissingLayers int    `json:"missing_layers"`
+	MissingBytes  int64  `json:"missing_bytes"`
+	Registry      string `json:"registry,omitempty"` // blob being pulled from the registry
+	Peer          string `json:"peer,omitempty"`     // blob being received from a peer
+	PeerFrom      string `json:"peer_from,omitempty"`
+	Finalizing    bool   `json:"finalizing,omitempty"`
+	Failures      int    `json:"failures,omitempty"`
+}
